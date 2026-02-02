@@ -77,12 +77,12 @@ charts:
       - ${ref(restaurant-markers)}
       - ${ref(station-bubbles)}
     layout:
+      margin: {l: 0, r: 0, t: 0, b: 0}
       map:
         center:
           lat: 40.7128
           lon: -73.95
         zoom: 11
-      margin: {l: 0, r: 0, t: 40, b: 0}
 
 dashboards:
   - name: nyc-cuisine-dashboard
@@ -94,9 +94,7 @@ dashboards:
                 # NYC Restaurant Cuisine Explorer
                 Select a cuisine to see restaurants and best subway stops.
                 Blue bubbles = subway stations (bigger = more restaurants nearby).
-      - height: compact
-        items:
           - input: ${ref(cuisine-select)}
-      - height: xlarge
+      - height: large
         items:
           - chart: ${ref(cuisine-map)}
