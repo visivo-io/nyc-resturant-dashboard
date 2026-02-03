@@ -15,8 +15,267 @@ import duckdb
 DATA_DIR = os.path.dirname(os.path.abspath(__file__))
 SUBWAY_CSV = os.path.join(DATA_DIR, "subway_stations.csv")
 RESTAURANT_CSV = os.path.join(DATA_DIR, "Open_Restaurants_Inspections_20260107.csv")
+CUISINE_LOOKUP_TSV = os.path.join(DATA_DIR, "cuisine_lookup.tsv")
 DB_PATH = os.path.join(DATA_DIR, "nyc_food.duckdb")
 SUBWAY_URL = "https://data.ny.gov/api/views/39hk-dx4f/rows.csv?accessType=DOWNLOAD"
+
+# Each tuple is (cuisine_label, regex_pattern). Order matters: first match wins.
+CUISINES = [
+    # ── Specific food type (before Italian so pizza shops get their own category) ──
+    ("Pizza", r"pizza|pizzeria"),
+
+    # ── East Asian ──
+    ("Chinese",
+     r"chin(a|ese)|wok|dumpling|dim.?sum|szechuan|sichuan|hunan|peking|shanghai|"
+     r"cantonese|chow|kung|lo.?mein|\bbao\b|congee|hotpot|hot.?pot|wonton|won.?ton|"
+     r"\bpanda\b|mandarin|\bjade\b|chopstick|great.?wall|golden.?dragon"),
+    ("Japanese",
+     r"sushi|ramen|japanese|\bjapan\b|teriyaki|tempura|\budon\b|\bsoba\b|izakaya|"
+     r"yakitori|tonkatsu|omakase|hibachi|sakura"),
+    ("Korean", r"korean|\bkorea\b|bibimbap|kimchi|bulgogi|galbi"),
+    ("Taiwanese", r"taiwan(ese)?|bubble.?tea|\bboba\b"),
+    ("Mongolian", r"mongol(ia|ian)"),
+
+    # ── Southeast Asian ──
+    ("Thai", r"\bthai\b|thailand|bangkok|pad.?thai|\bsiam\b"),
+    ("Vietnamese", r"vietnamese|vietnam|\bpho\b|banh.?mi|saigon|hanoi"),
+    ("Filipino", r"filipin(o|a)|philippin(e|es)|lumpia|manila|pinoy"),
+    ("Malaysian", r"malaysia(n)?|nasi.?lemak"),
+    ("Indonesian", r"indonesia(n)?|nasi.?goreng|rendang|jakarta"),
+    ("Cambodian", r"cambodia(n)?|khmer|phnom.?penh"),
+    ("Burmese", r"burm(a|ese)|myanmar"),
+    ("Laotian", r"lao(s|tian)"),
+    ("Singaporean", r"singapore(an)?"),
+    ("Bruneian", r"brunei(an)?"),
+    ("Timorese", r"timor(ese)?"),
+
+    # ── South Asian ──
+    ("Indian",
+     r"indian|\bindia\b|\bcurry\b|tandoori|masala|biryani|\bnaan\b|\bdosa\b|tikka|"
+     r"paneer|samosa|chutney|bombay|\bdelhi\b|punjab|himalaya|vindaloo|korma"),
+    ("Pakistani", r"pakistan(i)?|karachi|lahori"),
+    ("Bangladeshi", r"bangladesh(i)?|bengali|\bdhaka\b"),
+    ("Sri Lankan", r"sri.?lank(a|an)|ceylon(ese)?"),
+    ("Nepali", r"nepal(i|ese)?|kathmandu|\bmomo\b"),
+    ("Bhutanese", r"bhutan(ese)?"),
+    ("Maldivian", r"maldiv(es|ian)"),
+
+    # ── Central Asian ──
+    ("Afghan", r"afghan(i|istan)?|\bkabul\b"),
+    ("Uzbek", r"uzbek(istan)?|\bplov\b|samarkand"),
+    ("Kazakh", r"kazakh(stan)?"),
+    ("Kyrgyz", r"kyrgyz(stan)?"),
+    ("Tajik", r"tajik(istan)?"),
+    ("Turkmen", r"turkmen(istan)?"),
+
+    # ── Middle Eastern ──
+    ("Turkish", r"turk(ish|ey|iye)|döner|doner|\bkebab\b|baklava|istanbul|ankara"),
+    ("Lebanese", r"leban(on|ese)|beirut"),
+    ("Persian", r"persia(n)?|iran(ian)?|tehran"),
+    ("Israeli", r"israel(i)?|tel.?aviv|jerusalem"),
+    ("Iraqi", r"iraq(i)?|baghdad"),
+    ("Syrian", r"syria(n)?|damascus|aleppo"),
+    ("Jordanian", r"jordan(ian)?|\bamman\b"),
+    ("Yemeni", r"yemen(i)?"),
+    ("Saudi", r"saudi|arabia(n)?"),
+    ("Emirati", r"emirat(i|es)|dubai|abu.?dhabi"),
+    ("Kuwaiti", r"kuwait(i)?"),
+    ("Omani", r"\boman(i)?\b"),
+    ("Bahraini", r"bahrain(i)?"),
+    ("Qatari", r"qatar(i)?"),
+    ("Palestinian", r"palestin(e|ian)"),
+
+    # ── North African ──
+    ("Moroccan", r"morocc(o|an)|\bmaroc\b|tagine|marrakech"),
+    ("Egyptian", r"egypt(ian)?|cairo|koshary"),
+    ("Tunisian", r"tunis(ia|ian)?"),
+    ("Algerian", r"alger(ia|ian)?"),
+    ("Libyan", r"liby(a|an)"),
+    ("Sudanese", r"sudan(ese)?|khartoum"),
+
+    # ── West African ──
+    ("Nigerian", r"nigeria(n)?|jollof|lagos|\bsuya\b"),
+    ("Ghanaian", r"ghan(a|ian)|accra"),
+    ("Senegalese", r"senegal(ese)?|dakar"),
+    ("Malian", r"\bmali(an)?\b|bamako"),
+    ("Ivorian", r"ivory.?coast|ivoire|ivorian|abidjan"),
+    ("Guinean", r"\bguinea(n)?\b|conakry"),
+    ("Sierra Leonean", r"sierra.?leon(e|ean)"),
+    ("Liberian", r"liberi(a|an)"),
+    ("Togolese", r"togo(lese)?|lom[eé]"),
+    ("Beninese", r"benin(ese)?|cotonou"),
+    ("Burkinabe", r"burkina|burkinab[eé]"),
+    ("Gambian", r"\bgambi(a|an)\b"),
+    ("Cape Verdean", r"cape.?verd(e|ean)|cabo.?verde"),
+    ("Mauritanian", r"mauritani(a|an)"),
+    ("Nigerien", r"\bniger(ien)?\b"),
+
+    # ── East African ──
+    ("Ethiopian", r"ethiopi(a|an)|injera|berbere|addis"),
+    ("Eritrean", r"eritre(a|an)"),
+    ("Somali", r"somali(a|an)?|mogadishu"),
+    ("Kenyan", r"keny(a|an)|nairobi"),
+    ("Tanzanian", r"tanzani(a|an)|zanzibar|dar.?es.?salaam"),
+    ("Ugandan", r"ugand(a|an)|kampala"),
+    ("Rwandan", r"rwand(a|an)|kigali"),
+    ("Burundian", r"burund(i|ian)"),
+    ("Djiboutian", r"djibouti(an)?"),
+    ("South Sudanese", r"south.?sudan(ese)?"),
+
+    # ── Central African ──
+    ("Congolese", r"congol(ese)?|\bcongo\b|kinshasa"),
+    ("Cameroonian", r"cameroon(ian)?|douala|yaound[eé]"),
+    ("Chadian", r"\bchad(ian)?\b"),
+    ("Gabonese", r"gabon(ese)?|libreville"),
+    ("Central African", r"central.?african|bangui"),
+    ("Equatorial Guinean", r"equatorial.?guinea"),
+    ("Sao Tomean", r"s[aã]o.?tom[eé]"),
+
+    # ── Southern African ──
+    ("South African", r"south.?african|braai|cape.?town|johannesburg"),
+    ("Zimbabwean", r"zimbabwe(an)?|harare"),
+    ("Mozambican", r"mozambi(can|que)|maputo"),
+    ("Zambian", r"zambi(a|an)|lusaka"),
+    ("Malawian", r"malawi(an)?|lilongwe"),
+    ("Botswanan", r"botswana(n)?|gaborone"),
+    ("Namibian", r"namibi(a|an)|windhoek"),
+    ("Angolan", r"angol(a|an)|luanda"),
+    ("Malagasy", r"madagascar|malagasy"),
+    ("Mauritian", r"mauriti(us|an)"),
+    ("Swazi", r"eswatini|swazi(land)?"),
+    ("Lesothan", r"lesotho|basotho"),
+    ("Seychellois", r"seychell(es|ois)"),
+    ("Comorian", r"comor(os|ian)"),
+
+    # ── Caribbean (specific countries before generic) ──
+    ("Jamaican", r"jamaica(n)?|\bjerk\b|kingston"),
+    ("Cuban", r"cuba(n|no)?|\bcuba\b|havana|\bhabana\b"),
+    ("Haitian", r"haiti(an)?"),
+    ("Dominican", r"dominican|santo.?domingo"),
+    ("Puerto Rican", r"puerto.?ric(o|an)|boricua"),
+    ("Trinidadian", r"trinidad(ian)?|tobago"),
+    ("Barbadian", r"barbad(os|ian)|bajan"),
+    ("Bahamian", r"bahama(s|ian)"),
+    ("Grenadian", r"grenad(a|ian)"),
+    ("St. Lucian", r"st\.?.?luci(a|an)"),
+    ("Antiguan", r"antigu(a|an)"),
+    ("St. Vincentian", r"st\.?.?vincent"),
+    ("Kittitian", r"st\.?.?kitts|nevis"),
+    ("Dominican (Dominica)", r"\bdominica\b"),
+    ("Caribbean", r"caribbean|\broti\b|plantain|oxtail"),
+
+    # ── Mexican ──
+    ("Mexican",
+     r"mexican|\bmexico\b|méxico|\btaco\b|burrito|taqueria|enchilada|tortilla|"
+     r"tamale|quesadilla|cantina|oaxaca|puebla|jalisco|azteca"),
+
+    # ── Central American ──
+    ("Guatemalan", r"guatemal(a|an|teco)"),
+    ("Belizean", r"beliz(e|ean)"),
+    ("Honduran", r"hondur(as|an)"),
+    ("Salvadoran", r"salvad(or|oran)|pupusa|el.?salvador"),
+    ("Nicaraguan", r"nicaragu(a|an)"),
+    ("Costa Rican", r"costa.?ric(a|an)"),
+    ("Panamanian", r"panam(a|á|anian)"),
+
+    # ── South American ──
+    ("Peruvian", r"peru(vian)?|\bperú\b|ceviche|lomo.?saltado|anticucho"),
+    ("Colombian", r"colombi(a|an)|arepa|bandeja|bogot[aá]|medell[ií]n"),
+    ("Brazilian", r"brazil(ian)?|brasil(eiro)?|churrasco|açaí|\bacai\b|feijoada"),
+    ("Argentine", r"argentin(a|e|ian)|buenos.?aires|asado|gaucho|chimichurri"),
+    ("Venezuelan", r"venezuel(a|an)|caracas"),
+    ("Chilean", r"chile(an)?|santiago"),
+    ("Ecuadorian", r"ecuador(ian)?|quito"),
+    ("Bolivian", r"bolivi(a|an)"),
+    ("Paraguayan", r"paragua(y|yan)"),
+    ("Uruguayan", r"urugua(y|yan)|montevideo"),
+    ("Guyanese", r"guyan(a|ese)"),
+    ("Surinamese", r"surinam(e|ese)"),
+
+    # ── Western European ──
+    ("Italian",
+     r"italian|\bitalia\b|trattoria|ristorante|osteria|\bpasta\b|lasagna|gelato|"
+     r"panini|focaccia|gnocchi|il.?forno|napoli|romano"),
+    ("French",
+     r"french|\bfrance\b|bistro|brasserie|creperie|crêperie|patisserie|pâtisserie"),
+    ("Spanish", r"spanish|\bspain\b|españa|tapas|paella|bodega|sangria"),
+    ("Portuguese", r"portugu(ese|al)|lisbon|lisboa|\bnando\b"),
+    ("German",
+     r"german(y)?|deutsch|biergarten|schnitzel|bratwurst|sauerkraut|pretzel|"
+     r"bavaria|münchen"),
+    ("Austrian", r"austri(a|an)|vienna|\bwien\b"),
+    ("Swiss", r"swiss|switzerland|fondue|raclette|zürich"),
+    ("Belgian", r"belgi(an|um)|brussels|bruxelles|waffle"),
+    ("Dutch", r"dutch|holland|netherlands|amsterdam"),
+    ("Luxembourgish", r"luxemb(ourg|ourgish)"),
+
+    # ── British Isles ──
+    ("British", r"british|english|\bengland\b"),
+    ("Irish", r"irish|\bireland\b|dublin"),
+    ("Scottish", r"scotl(and|ish)|edinburgh"),
+    ("Welsh", r"\bwales\b|welsh"),
+
+    # ── Nordic ──
+    ("Swedish", r"swed(ish|en)|stockholm"),
+    ("Norwegian", r"norweg(ian|y)|\boslo\b"),
+    ("Danish", r"danish|denmark|copenhagen|smørrebrød"),
+    ("Finnish", r"finn(ish|land)|helsinki"),
+    ("Icelandic", r"iceland(ic)?|reykjavik"),
+
+    # ── Eastern European & Balkans ──
+    ("Greek/Mediterranean",
+     r"greek|\bgreece\b|hellas|gyro|souvlaki|mediterranean|falafel|shawarma|"
+     r"hummus|\bpita\b"),
+    ("Polish", r"polish|poland|polska|pierogi|kielbasa"),
+    ("Russian", r"russi(a|an)|moscow|borscht|blini|pelmeni"),
+    ("Ukrainian", r"ukrain(e|ian)|kyiv|kiev|varenyky"),
+    ("Hungarian", r"hungar(y|ian)|budapest|goulash"),
+    ("Czech", r"czech|prague|praha|bohemian"),
+    ("Romanian", r"romani(a|an)|bucharest"),
+    ("Bulgarian", r"bulgari(a|an)|\bsofia\b"),
+    ("Serbian", r"serbi(a|an)|belgrade"),
+    ("Croatian", r"croat(ia|ian)|zagreb"),
+    ("Bosnian", r"bosni(a|an)|sarajevo"),
+    ("Slovenian", r"sloven(ia|ian)|ljubljana"),
+    ("Slovak", r"slovak(ia|ian)?|bratislava"),
+    ("Lithuanian", r"lithuan(ia|ian)|vilnius"),
+    ("Latvian", r"latvi(a|an)|\briga\b"),
+    ("Estonian", r"estoni(a|an)|tallinn"),
+    ("Belarusian", r"belarus(ian)?|minsk"),
+    ("Moldovan", r"moldov(a|an)"),
+    ("Albanian", r"albani(a|an)|tirana"),
+    ("Macedonian", r"macedoni(a|an)|skopje"),
+    ("Montenegrin", r"montenegr(o|in)"),
+    ("Kosovar", r"kosov(o|ar)"),
+
+    # ── Caucasus ──
+    ("Georgian", r"georgi(a|an)|tbilisi|khachapuri|khinkali"),
+    ("Armenian", r"armeni(a|an)|yerevan"),
+    ("Azerbaijani", r"azerbai(jan|jani)|\bbaku\b"),
+
+    # ── Oceania & Pacific ──
+    ("Australian", r"australi(a|an)"),
+    ("New Zealand", r"new.?zealand"),
+    ("Hawaiian", r"hawai(i|ian)|\bpoke\b|\baloha\b"),
+    ("Fijian", r"fiji(an)?"),
+    ("Samoan", r"samoa(n)?"),
+    ("Tongan", r"tonga(n)?"),
+    ("Papua New Guinean", r"papua|new.?guinea"),
+    ("Pacific Islander", r"polynesia(n)?|melanesia(n)?|micronesia(n)?"),
+]
+
+
+def _build_cuisine_case_sql():
+    """Generate the SQL CASE statement from the CUISINES list."""
+    clauses = []
+    for label, pattern in CUISINES:
+        escaped = label.replace("'", "''")
+        clauses.append(
+            f"WHEN regexp_matches(LOWER(d.RestaurantName), '{pattern}') "
+            f"THEN '{escaped}'"
+        )
+    body = "\n                ".join(clauses)
+    return f"CASE\n                {body}\n                ELSE NULL\n            END"
 
 
 def download_subway_data():
@@ -51,6 +310,18 @@ def build_database():
     row_count = con.execute("SELECT COUNT(*) FROM raw_subway").fetchone()[0]
     print(f"  Loaded {row_count:,} raw subway rows")
 
+    print("Loading cuisine lookup table...")
+    con.execute(f"""
+        CREATE TABLE cuisine_lookup AS
+        SELECT
+            column0 AS restaurant_name,
+            column1 AS cuisine
+        FROM read_csv('{CUISINE_LOOKUP_TSV}',
+            delim='\t', header=false, columns={{'column0': 'VARCHAR', 'column1': 'VARCHAR'}})
+    """)
+    lookup_count = con.execute("SELECT COUNT(*) FROM cuisine_lookup").fetchone()[0]
+    print(f"  Loaded {lookup_count:,} cuisine lookup entries")
+
     # ---- Deduplicate subway stations by Complex ID ----
     print("Deduplicating subway stations by Complex ID...")
     con.execute("""
@@ -68,8 +339,9 @@ def build_database():
     print(f"  {station_count:,} unique station complexes")
 
     # ---- Deduplicate restaurants and classify cuisines ----
+    cuisine_case = _build_cuisine_case_sql()
     print("Deduplicating restaurants and classifying cuisines...")
-    con.execute("""
+    con.execute(f"""
         CREATE TABLE classified_restaurants AS
         WITH deduped AS (
             SELECT *,
@@ -84,61 +356,31 @@ def build_database():
               AND CAST(Longitude AS DOUBLE) != 0
         )
         SELECT
-            RestaurantName AS restaurant_name,
-            BusinessAddress AS address,
-            Borough AS borough,
-            Postcode AS postcode,
-            CAST(Latitude AS DOUBLE) AS latitude,
-            CAST(Longitude AS DOUBLE) AS longitude,
-            CASE
-                WHEN regexp_matches(LOWER(RestaurantName),
-                    'chin(a|ese)|wok|dumpling|dim.?sum|szechuan|sichuan|hunan|peking|shanghai|cantonese|chow|kung|lo.?mein|\bbao\b|congee|hotpot|hot.?pot|wonton|won.?ton|\bpanda\b|mandarin|\bjade\b|chopstick|great.?wall|golden.?dragon')
-                    THEN 'Chinese'
-                WHEN regexp_matches(LOWER(RestaurantName),
-                    'pizza|pizzeria|trattoria|ristorante|italian|osteria|\bpasta\b|lasagna|gelato|panini|focaccia|gnocchi|il.?forno|napoli|romano')
-                    THEN 'Italian'
-                WHEN regexp_matches(LOWER(RestaurantName),
-                    '\btaco|burrito|mexican|taqueria|enchilada|tortilla|tamale|quesadilla|cantina|oaxaca|puebla|jalisco|azteca')
-                    THEN 'Mexican'
-                WHEN regexp_matches(LOWER(RestaurantName),
-                    'sushi|ramen|japanese|teriyaki|tempura|\budon\b|\bsoba\b|izakaya|yakitori|tonkatsu|omakase|hibachi|sakura')
-                    THEN 'Japanese'
-                WHEN regexp_matches(LOWER(RestaurantName),
-                    'indian|\bcurry\b|tandoori|masala|biryani|\bnaan\b|\bdosa\b|tikka|paneer|samosa|chutney|bombay|\bdelhi\b|punjab|himalaya|vindaloo|korma')
-                    THEN 'Indian'
-                WHEN regexp_matches(LOWER(RestaurantName),
-                    '\bthai\b|bangkok|pad.?thai|\bsiam\b')
-                    THEN 'Thai'
-                WHEN regexp_matches(LOWER(RestaurantName),
-                    'korean|bibimbap|kimchi|bulgogi|galbi')
-                    THEN 'Korean'
-                WHEN regexp_matches(LOWER(RestaurantName),
-                    'greek|gyro|souvlaki|mediterranean|\bkebab|kabob|falafel|shawarma|hummus|\bpita\b')
-                    THEN 'Greek/Mediterranean'
-                WHEN regexp_matches(LOWER(RestaurantName),
-                    '\bpho\b|vietnamese|banh.?mi|saigon|hanoi')
-                    THEN 'Vietnamese'
-                WHEN regexp_matches(LOWER(RestaurantName),
-                    'caribbean|\bjerk\b|jamaican|\broti\b|plantain|oxtail')
-                    THEN 'Caribbean'
-                WHEN regexp_matches(LOWER(RestaurantName),
-                    'halal|lebanese|turkish|afghan|persian|moroccan')
-                    THEN 'Middle Eastern'
-                WHEN regexp_matches(LOWER(RestaurantName),
-                    'french|bistro|brasserie|creperie|patisserie')
-                    THEN 'French'
-                ELSE 'Other'
-            END AS cuisine
-        FROM deduped
-        WHERE rn = 1
+            d.RestaurantName AS restaurant_name,
+            d.BusinessAddress AS address,
+            d.Borough AS borough,
+            d.Postcode AS postcode,
+            CAST(d.Latitude AS DOUBLE) AS latitude,
+            CAST(d.Longitude AS DOUBLE) AS longitude,
+            COALESCE(
+                cl.cuisine,
+                {cuisine_case},
+                'Unclassified'
+            ) AS cuisine
+        FROM deduped d
+        LEFT JOIN cuisine_lookup cl
+            ON LOWER(TRIM(d.RestaurantName)) = LOWER(TRIM(cl.restaurant_name))
+        WHERE d.rn = 1
     """)
 
     total = con.execute("SELECT COUNT(*) FROM classified_restaurants").fetchone()[0]
-    classified = con.execute("SELECT COUNT(*) FROM classified_restaurants WHERE cuisine != 'Other'").fetchone()[0]
+    classified = con.execute(
+        "SELECT COUNT(*) FROM classified_restaurants WHERE cuisine != 'Unclassified'"
+    ).fetchone()[0]
     print(f"  {total:,} deduplicated restaurants, {classified:,} classified ({classified*100//total}%)")
 
     # ---- Nearest station via LATERAL join ----
-    print("Computing nearest subway station for each classified restaurant...")
+    print("Computing nearest subway station for each restaurant...")
     con.execute("""
         CREATE TABLE restaurants_with_station AS
         SELECT
@@ -161,7 +403,6 @@ def build_database():
                    + (r.longitude - longitude)*(r.longitude - longitude)
             LIMIT 1
         ) s
-        WHERE r.cuisine != 'Other'
     """)
 
     rws_count = con.execute("SELECT COUNT(*) FROM restaurants_with_station").fetchone()[0]
@@ -196,7 +437,7 @@ def build_database():
     for cuisine, cnt in rows:
         print(f"  {cuisine:<25} {cnt:>5}")
 
-    print(f"\n  Total classified: {sum(r[1] for r in rows):,}")
+    print(f"\n  Total: {sum(r[1] for r in rows):,}")
 
     con.close()
     print(f"\nDatabase written to {DB_PATH}")

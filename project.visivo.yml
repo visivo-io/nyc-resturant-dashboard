@@ -11,31 +11,23 @@ models:
     sql: SELECT * FROM restaurants_with_station
 
   - name: station-counts
-    sql: SELECT * FROM station_cuisine_counts
+    sql: >
+      SELECT * FROM (
+        SELECT *,
+          ROW_NUMBER() OVER (PARTITION BY cuisine ORDER BY restaurant_count DESC) AS rank
+        FROM station_cuisine_counts
+      ) WHERE rank <= 3
+
+  - name: cuisine-list
+    sql: SELECT DISTINCT cuisine FROM restaurants_with_station ORDER BY cuisine
 
 inputs:
   - name: cuisine-select
     label: "Select Cuisine"
     type: single-select
-    options:
-      [
-        "Caribbean",
-        "Chinese",
-        "French",
-        "Greek/Mediterranean",
-        "Indian",
-        "Italian",
-        "Japanese",
-        "Korean",
-        "Mexican",
-        "Middle Eastern",
-        "Thai",
-        "Vietnamese",
-      ]
+    options: ?{SELECT cuisine FROM ${ref(cuisine-list)}}
     display:
       type: dropdown
-      default:
-        value: "Italian"
 
 insights:
   - name: restaurant-markers
@@ -61,12 +53,9 @@ insights:
       text: ?{${ref(station-counts).station_name} || ' (' || ${ref(station-counts).station_routes} || ')'}
       mode: markers
       marker:
-        size: ?{${ref(station-counts).restaurant_count}}
+        size: ?{${ref(station-counts).restaurant_count}/16 + 10}
         color: "#3498db"
         opacity: 0.8
-        sizemode: area
-        sizeref: 0.3
-        sizemin: 5
       name: subway-stations
     interactions:
       - filter: ?{${ref(station-counts).cuisine} = '${ref(cuisine-select).value}'}
@@ -74,15 +63,16 @@ insights:
 charts:
   - name: cuisine-map
     insights:
-      - ${ref(restaurant-markers)}
       - ${ref(station-bubbles)}
+      - ${ref(restaurant-markers)}
     layout:
+      showlegend: false
       margin: {l: 0, r: 0, t: 0, b: 0}
       map:
         center:
           lat: 40.7128
           lon: -73.95
-        zoom: 11
+        zoom: 10
 
 dashboards:
   - name: nyc-cuisine-dashboard
